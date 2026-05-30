@@ -283,10 +283,10 @@
                     </div>
                     <div class="form-group" style="grid-column: span 2;">
                         <label>代理地址（可选，绕过CF防护）</label>
-                        <input type="text" id="proxy_url" placeholder="socks5://127.0.0.1:1080 或 http://127.0.0.1:8080">
+                        <input type="text" id="proxy_url" placeholder="socks5://127.0.0.1:1080 或 vless:// / vmess:// / trojan:// / ss://">
                     </div>
                 </div>
-                <p style="color:#888;font-size:12px;margin:10px 0;">💡 提示：如果遇到 Cloudflare 防护，可配置 SOCKS5/HTTP 代理绕过</p>
+                <p style="color:#888;font-size:12px;margin:10px 0;">💡 支持 SOCKS5/HTTP/HTTPS 普通代理，以及 vless://、vmess://、trojan://、ss:// 节点直连</p>
                 <button type="submit" class="btn btn-primary">添加服务器</button>
             </form>
         </div>
@@ -329,7 +329,7 @@
                 </div>
                 <div class="form-group">
                     <label>代理地址（可选）</label>
-                    <input type="text" id="edit-proxy_url" placeholder="socks5://127.0.0.1:1080">
+                    <input type="text" id="edit-proxy_url" placeholder="socks5://127.0.0.1:1080 或 vless:// / vmess:// / trojan:// / ss://">
                 </div>
                 <div style="display:flex;gap:10px;margin-top:20px;">
                     <button type="submit" class="btn btn-primary">保存</button>
