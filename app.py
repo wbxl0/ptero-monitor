@@ -581,6 +581,7 @@ def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int
 
 def _start_xray(proxy_url: str) -> Optional[str]:
     """启动 Xray 并返回本地 SOCKS5 代理地址"""
+    global _next_xray_port
     xray_path = _find_xray()
     if not xray_path:
         logger.warning("未找到 Xray 二进制文件，无法使用 vless/vmess/trojan/ss 代理")
