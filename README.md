@@ -49,7 +49,7 @@ volumes:
   ptero-data:
 ```
 
-> **自定义镜像名**：在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 中添加 `IMAGE_NAME` 变量（如 `myuser/my-monitor`），即可覆盖默认的镜像名。
+> **自定义镜像名**：在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 中添加 `IMAGE_NAME` 变量（如 `ptero-monitor-x`），workflow 会自动补全用户名前缀。
 
 ### 手动部署
 
@@ -113,7 +113,7 @@ ss://method:password@host:port?plugin=...
 |------|--------|------|
 | `PORT` | `8000` | 监听端口 |
 | `DB_PATH` | `monitor.db` | 数据库文件路径 |
-| `IMAGE_NAME` | `github.repository` | GitHub Actions 自定义 Docker 镜像名（在仓库 Variables 中设置） |
+| `IMAGE_NAME` | `github.repository` | GitHub Actions 自定义镜像名，在仓库 Variables 中设置，只需写短名称如 `ptero-monitor-x`，自动补全 owner 前缀 |
 
 ## 📁 项目结构
 
