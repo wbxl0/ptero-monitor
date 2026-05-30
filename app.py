@@ -16,6 +16,10 @@ from datetime import datetime
 from aiohttp import web
 from typing import Dict, Optional
 from curl_cffi.requests import AsyncSession
+import subprocess
+import shutil
+import tempfile
+from urllib.parse import parse_qs, unquote
 
 # 配置
 PORT = int(os.environ.get('PORT', 8000))
@@ -131,7 +135,7 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
             base_url = f"{base_url}/{server_id}" if not base_url.endswith('/') else f"{base_url}{server_id}"
     
     resources_url = f"{base_url}/{server_id}/resources"
-    proxy = proxy_url.strip() if proxy_url else None
+    proxy = resolve_proxy(proxy_url)
     
     headers = {
         'Authorization': f'Bearer {api_key}',
@@ -170,7 +174,7 @@ async def send_power_action(api_url: str, api_key: str, server_id: str, action: 
             base_url = f"{base_url}/{server_id}" if not base_url.endswith('/') else f"{base_url}{server_id}"
     
     power_url = f"{base_url}/{server_id}/power"
-    proxy = proxy_url.strip() if proxy_url else None
+    proxy = resolve_proxy(proxy_url)
     
     headers = {
         'Authorization': f'Bearer {api_key}',
@@ -306,6 +310,347 @@ def stop_monitor(server_id: int):
     if server_id in monitor_tasks:
         monitor_tasks[server_id].cancel()
         del monitor_tasks[server_id]
+
+# ============ Xray 代理管理 ============
+# 支持 vless://, vmess://, trojan://, ss:// 格式的代理节点
+# 自动启动本地 Xray 进程转换为 SOCKS5/HTTP 代理使用
+
+_xray_procs: Dict[str, tuple] = {}
+_next_xray_port = 2080
+
+def _find_xray() -> Optional[str]:
+    """查找 xray 可执行文件"""
+    xray_path = shutil.which('xray')
+    if xray_path:
+        return xray_path
+    for p in ['/usr/local/bin/xray', '/opt/xray/xray', './xray']:
+        if os.path.isfile(p):
+            return p
+    return None
+
+def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int = 1081) -> dict:
+    """从 vless/vmess/trojan/ss 链接生成 Xray JSON 配置"""
+    protocol = proxy_url.split('://')[0]
+    content = proxy_url.split('://', 1)[1] if '://' in proxy_url else ''
+
+    if '#' in content:
+        content = content.rsplit('#', 1)[0]
+
+    config = {
+        "log": {"loglevel": "warning"},
+        "inbounds": [
+            {"port": socks_port, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}},
+            {"port": http_port, "listen": "127.0.0.1", "protocol": "http"}
+        ],
+        "outbounds": []
+    }
+
+    if protocol == 'vless':
+        uuid, rest = content.split('@', 1)
+        if '?' in rest:
+            host_port, params_str = rest.split('?', 1)
+        else:
+            host_port, params_str = rest, ''
+
+        if ':' in host_port:
+            address, port = host_port.rsplit(':', 1)
+        else:
+            address, port = host_port, '443'
+
+        params = parse_qs(params_str)
+        security = params.get('security', ['none'])[0]
+        network = params.get('type', ['tcp'])[0]
+        sni = params.get('sni', [address])[0]
+        fp = params.get('fp', ['chrome'])[0]
+        flow = params.get('flow', [''])[0]
+        pbk = params.get('pbk', [''])[0]
+        sid = params.get('sid', [''])[0]
+        host = params.get('host', [sni])[0]
+        path = unquote(params.get('path', ['/'])[0])
+
+        outbound = {
+            "protocol": "vless",
+            "settings": {
+                "vnext": [{
+                    "address": address,
+                    "port": int(port),
+                    "users": [{"id": uuid, "encryption": "none"}]
+                }]
+            },
+            "streamSettings": {
+                "network": network,
+                "security": security
+            }
+        }
+
+        if flow:
+            outbound['settings']['vnext'][0]['users'][0]['flow'] = flow
+
+        if security == 'reality':
+            reality_settings = {
+                "serverName": sni,
+                "fingerprint": fp,
+                "publicKey": pbk
+            }
+            if sid:
+                reality_settings['shortId'] = sid
+            outbound['streamSettings']['realitySettings'] = reality_settings
+        elif security == 'tls':
+            outbound['streamSettings']['tlsSettings'] = {
+                "serverName": sni,
+                "fingerprint": fp,
+                "allowInsecure": True
+            }
+
+        if network == 'ws':
+            outbound['streamSettings']['wsSettings'] = {
+                "path": path,
+                "headers": {"Host": host}
+            }
+        elif network == 'grpc':
+            svc = params.get('serviceName', [''])[0]
+            outbound['streamSettings']['grpcSettings'] = {"serviceName": svc}
+
+        config['outbounds'].append(outbound)
+
+    elif protocol == 'vmess':
+        try:
+            padding = 4 - len(content) % 4
+            if padding != 4:
+                content += '=' * padding
+            decoded = base64.b64decode(content).decode('utf-8')
+            vm = json.loads(decoded)
+        except Exception as e:
+            raise ValueError(f'解析 VMess 链接失败: {e}')
+
+        address = vm.get('add', '')
+        port = int(vm.get('port', 443))
+        uuid = vm.get('id', '')
+        aid = int(vm.get('aid', 0))
+        network = vm.get('net', 'tcp')
+        tls = vm.get('tls', '')
+        sni = vm.get('sni', '') or vm.get('host', address)
+        host = vm.get('host', address)
+        path = vm.get('path', '/')
+        fp = vm.get('fp', 'chrome')
+        insecure = vm.get('insecure', '1') == '1'
+
+        outbound = {
+            "protocol": "vmess",
+            "settings": {
+                "vnext": [{
+                    "address": address,
+                    "port": port,
+                    "users": [{"id": uuid, "alterId": aid, "security": "auto"}]
+                }]
+            },
+            "streamSettings": {
+                "network": network,
+                "security": "tls" if tls == 'tls' else "none"
+            }
+        }
+
+        if tls == 'tls':
+            outbound['streamSettings']['tlsSettings'] = {
+                "serverName": sni,
+                "fingerprint": fp,
+                "allowInsecure": insecure
+            }
+
+        if network == 'ws':
+            outbound['streamSettings']['wsSettings'] = {
+                "path": path,
+                "headers": {"Host": host}
+            }
+
+        config['outbounds'].append(outbound)
+
+    elif protocol == 'trojan':
+        password, rest = content.split('@', 1)
+        if '?' in rest:
+            host_port, params_str = rest.split('?', 1)
+        else:
+            host_port, params_str = rest, ''
+
+        if ':' in host_port:
+            address, port = host_port.rsplit(':', 1)
+        else:
+            address, port = host_port, '443'
+
+        params = parse_qs(params_str)
+        sni = params.get('sni', [address])[0]
+        network = params.get('type', ['tcp'])[0]
+        host = params.get('host', [sni])[0]
+        path = unquote(params.get('path', ['/'])[0])
+        fp = params.get('fp', ['chrome'])[0]
+
+        outbound = {
+            "protocol": "trojan",
+            "settings": {
+                "servers": [{
+                    "address": address,
+                    "port": int(port),
+                    "password": password
+                }]
+            },
+            "streamSettings": {
+                "network": network,
+                "security": "tls",
+                "tlsSettings": {
+                    "serverName": sni,
+                    "fingerprint": fp,
+                    "allowInsecure": True
+                }
+            }
+        }
+
+        if network == 'ws':
+            outbound['streamSettings']['wsSettings'] = {
+                "path": path,
+                "headers": {"Host": host}
+            }
+
+        config['outbounds'].append(outbound)
+
+    elif protocol == 'ss':
+        plugin_params = {}
+        base_content = content
+        if '?' in content:
+            base_content, query = content.split('?', 1)
+            qs = parse_qs(query)
+            plugin = qs.get('plugin', [''])[0]
+            if plugin:
+                plugin = unquote(plugin)
+                for item in plugin.split(';'):
+                    if '=' in item:
+                        k, v = item.split('=', 1)
+                        plugin_params[k] = v
+
+        if '@' in base_content:
+            encoded, server_part = base_content.split('@', 1)
+        else:
+            encoded, server_part = base_content, ''
+
+        if ':' in server_part:
+            address, port = server_part.split(':', 1)
+        else:
+            address, port = server_part, '443'
+
+        decoded = base64.b64decode(encoded + '==').decode('utf-8')
+        method, password = decoded.split(':', 1)
+
+        outbound = {
+            "protocol": "shadowsocks",
+            "settings": {
+                "servers": [{
+                    "address": address,
+                    "port": int(port),
+                    "method": method,
+                    "password": password
+                }]
+            }
+        }
+
+        if plugin_params:
+            mode = plugin_params.get('mode', 'websocket')
+            is_tls = 'tls' in plugin
+            plugin_host = plugin_params.get('host', address)
+            plugin_path = plugin_params.get('path', '/')
+
+            outbound['streamSettings'] = {
+                "network": "ws",
+                "security": "tls" if is_tls else "none",
+                "wsSettings": {
+                    "path": plugin_path,
+                    "headers": {"Host": plugin_host}
+                }
+            }
+            if is_tls:
+                outbound['streamSettings']['tlsSettings'] = {
+                    "serverName": plugin_host,
+                    "allowInsecure": True
+                }
+
+        config['outbounds'].append(outbound)
+
+    else:
+        raise ValueError(f'不支持的代理协议: {protocol}')
+
+    return config
+
+
+def _start_xray(proxy_url: str) -> Optional[str]:
+    """启动 Xray 并返回本地 SOCKS5 代理地址"""
+    xray_path = _find_xray()
+    if not xray_path:
+        logger.warning("未找到 Xray 二进制文件，无法使用 vless/vmess/trojan/ss 代理")
+        return None
+
+    config_hash = hashlib.md5(proxy_url.encode()).hexdigest()[:12]
+
+    if config_hash in _xray_procs:
+        proc, port = _xray_procs[config_hash]
+        if proc.poll() is None:
+            return f"socks5://127.0.0.1:{port}"
+        logger.info(f"Xray 进程已退出 (config: {config_hash})，重新启动")
+
+    socks_port = _next_xray_port
+    http_port = _next_xray_port + 1
+    _next_xray_port += 2
+
+    try:
+        config = _generate_xray_config(proxy_url, socks_port, http_port)
+    except Exception as e:
+        logger.error(f"解析代理链接失败: {e}")
+        return None
+
+    config_file = os.path.join(tempfile.gettempdir(), f"xray_{config_hash}.json")
+    with open(config_file, 'w') as f:
+        json.dump(config, f, indent=2)
+
+    try:
+        proc = subprocess.Popen(
+            [xray_path, 'run', '-c', config_file],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        _xray_procs[config_hash] = (proc, socks_port)
+        logger.info(f"Xray 已启动 (PID {proc.pid}, 端口 {socks_port})")
+        return f"socks5://127.0.0.1:{socks_port}"
+    except Exception as e:
+        logger.error(f"启动 Xray 失败: {e}")
+        return None
+
+
+def stop_all_xray():
+    """停止所有 Xray 进程"""
+    for config_hash, (proc, port) in _xray_procs.items():
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            logger.info(f"已停止 Xray (PID {proc.pid})")
+    _xray_procs.clear()
+
+
+def resolve_proxy(proxy_url: Optional[str]) -> Optional[str]:
+    """解析代理地址，返回可用的代理 URL（对 vless/vmess 等自动启动 Xray 转换）"""
+    if not proxy_url or not proxy_url.strip():
+        return None
+
+    proxy_url = proxy_url.strip()
+    protocol = proxy_url.split('://')[0] if '://' in proxy_url else ''
+
+    if protocol in ('socks5', 'socks', 'http', 'https'):
+        return proxy_url
+
+    if protocol in ('vless', 'vmess', 'trojan', 'ss'):
+        return _start_xray(proxy_url)
+
+    return proxy_url
+
 
 # ============ 认证相关 ============
 
@@ -734,10 +1079,11 @@ async def on_startup(app):
     logger.info(f"Started monitoring for {len(servers)} servers")
 
 async def on_shutdown(app):
-    """关闭时停止所有监控"""
+    """关闭时停止所有监控和 Xray 代理"""
     for task in monitor_tasks.values():
         task.cancel()
-    logger.info("All monitors stopped")
+    stop_all_xray()
+    logger.info("All monitors and proxies stopped")
 
 # ==================== 备份导出/导入 ====================
 
