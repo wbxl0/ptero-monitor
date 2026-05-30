@@ -136,15 +136,17 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
     
     resources_url = f"{base_url}/{server_id}/resources"
     proxy = resolve_proxy(proxy_url)
-    
+
     headers = {
         'Authorization': f'Bearer {api_key}',
         'Accept': 'application/json',
         'Content-Type': 'application/json'
     }
-    
+
+    impersonate = None if proxy else "chrome"
+
     try:
-        async with AsyncSession(impersonate="chrome", proxy=proxy, timeout=15) as session:
+        async with AsyncSession(impersonate=impersonate, proxy=proxy, timeout=15) as session:
             resp = await session.get(resources_url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
@@ -175,15 +177,17 @@ async def send_power_action(api_url: str, api_key: str, server_id: str, action: 
     
     power_url = f"{base_url}/{server_id}/power"
     proxy = resolve_proxy(proxy_url)
-    
+
     headers = {
         'Authorization': f'Bearer {api_key}',
         'Accept': 'application/json',
         'Content-Type': 'application/json'
     }
-    
+
+    impersonate = None if proxy else "chrome"
+
     try:
-        async with AsyncSession(impersonate="chrome", proxy=proxy, timeout=15) as session:
+        async with AsyncSession(impersonate=impersonate, proxy=proxy, timeout=15) as session:
             resp = await session.post(power_url, headers=headers, json={'signal': action})
             if resp.status_code in [200, 204]:
                 return {'success': True}
