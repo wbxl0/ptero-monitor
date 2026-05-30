@@ -14,6 +14,7 @@ import base64
 import hashlib
 from datetime import datetime
 from aiohttp import web
+import aiohttp
 from typing import Dict, Optional
 from curl_cffi.requests import AsyncSession
 import subprocess
@@ -143,19 +144,29 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
         'Content-Type': 'application/json'
     }
 
-    impersonate = None if proxy else "chrome"
-
     try:
-        async with AsyncSession(impersonate=impersonate, proxy=proxy, timeout=15) as session:
-            resp = await session.get(resources_url, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    'success': True,
-                    'status': data.get('attributes', {}).get('current_state', 'unknown'),
-                    'resources': data.get('attributes', {})
-                }
-            else:
+        if proxy:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.get(resources_url, headers=headers, proxy=proxy) as resp:
+                    text = await resp.text()
+                    if resp.status == 200:
+                        data = json.loads(text)
+                        return {
+                            'success': True,
+                            'status': data.get('attributes', {}).get('current_state', 'unknown'),
+                            'resources': data.get('attributes', {})
+                        }
+                    return {'success': False, 'error': f'HTTP {resp.status}: {text[:200]}'}
+        else:
+            async with AsyncSession(impersonate="chrome", timeout=15) as session:
+                resp = await session.get(resources_url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {
+                        'success': True,
+                        'status': data.get('attributes', {}).get('current_state', 'unknown'),
+                        'resources': data.get('attributes', {})
+                    }
                 text = resp.text
                 return {'success': False, 'error': f'HTTP {resp.status_code}: {text[:200]}'}
     except asyncio.TimeoutError:
@@ -192,14 +203,19 @@ async def send_power_action(api_url: str, api_key: str, server_id: str, action: 
         'Content-Type': 'application/json'
     }
 
-    impersonate = None if proxy else "chrome"
-
     try:
-        async with AsyncSession(impersonate=impersonate, proxy=proxy, timeout=15) as session:
-            resp = await session.post(power_url, headers=headers, json={'signal': action})
-            if resp.status_code in [200, 204]:
-                return {'success': True}
-            else:
+        if proxy:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.post(power_url, headers=headers, json={'signal': action}, proxy=proxy) as resp:
+                    if resp.status in [200, 204]:
+                        return {'success': True}
+                    text = await resp.text()
+                    return {'success': False, 'error': f'HTTP {resp.status}: {text[:200]}'}
+        else:
+            async with AsyncSession(impersonate="chrome", timeout=15) as session:
+                resp = await session.post(power_url, headers=headers, json={'signal': action})
+                if resp.status_code in [200, 204]:
+                    return {'success': True}
                 text = resp.text
                 return {'success': False, 'error': f'HTTP {resp.status_code}: {text[:200]}'}
     except Exception as e:
