@@ -15,7 +15,8 @@ https://github.com/fascmer/ptero-monitor-cf
 - 📝 **操作日志** - 记录所有监控和重启操作
 - 🎮 **手动控制** - 支持手动启动/重启/停止操作
 - 🔐 **访问认证** - 可选的账号密码保护
-- 🌐 **代理支持** - 支持 SOCKS5/HTTP 代理，绕过 Cloudflare 防护
+- 🌐 **代理支持** - 支持 SOCKS5/HTTP/HTTPS 代理，绕过 Cloudflare 防护
+- 🚀 **节点直连** - 支持 vless://, vmess://, trojan://, ss:// 节点，自动启动 Xray 转换
 - ⚠️ **智能提示** - 自动识别 Cloudflare 防护并提示
 
 ## 🚀 快速开始
@@ -47,6 +48,8 @@ services:
 volumes:
   ptero-data:
 ```
+
+> **自定义镜像名**：在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 中添加 `IMAGE_NAME` 变量（如 `myuser/my-monitor`），即可覆盖默认的镜像名。
 
 ### 手动部署
 
@@ -81,11 +84,22 @@ python app.py
 
 ### 代理格式
 
+支持普通代理和节点直连两种方式：
+
 ```
+# 普通代理
 socks5://127.0.0.1:1080
 http://127.0.0.1:8080
 socks5://user:password@proxy.example.com:1080
+
+# 节点直连（自动启动 Xray 转换）
+vless://uuid@host:port?encryption=none&security=reality&...
+vmess://base64_encoded_json
+trojan://password@host:port?security=tls&...
+ss://method:password@host:port?plugin=...
 ```
+
+> 节点直连需要容器内包含 Xray 核心（Docker 部署已内置），手动部署需自行安装 `xray` 到 PATH。
 
 ### 设置访问认证
 
@@ -99,6 +113,14 @@ socks5://user:password@proxy.example.com:1080
 |------|--------|------|
 | `PORT` | `8000` | 监听端口 |
 | `DB_PATH` | `monitor.db` | 数据库文件路径 |
+
+## ⚙️ GitHub Actions 变量
+
+在仓库 **Settings → Secrets and variables → Actions → Variables** 中设置：
+
+| 变量 | 说明 |
+|------|------|
+| `IMAGE_NAME` | 自定义 Docker 镜像名（如 `myuser/my-monitor`），不设置则默认使用仓库名 |
 
 ## 📁 项目结构
 
