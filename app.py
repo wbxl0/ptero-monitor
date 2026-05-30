@@ -339,7 +339,6 @@ def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int
     config = {
         "log": {"loglevel": "warning"},
         "inbounds": [
-            {"port": socks_port, "listen": "127.0.0.1", "protocol": "socks", "settings": {"udp": True}},
             {"port": http_port, "listen": "127.0.0.1", "protocol": "http"}
         ],
         "outbounds": []
@@ -610,14 +609,23 @@ def _start_xray(proxy_url: str) -> Optional[str]:
         json.dump(config, f, indent=2)
 
     try:
+        xray_log = os.path.join(tempfile.gettempdir(), f"xray_{config_hash}.log")
+        with open(xray_log, 'w') as f:
+            f.write('')
         proc = subprocess.Popen(
             [xray_path, 'run', '-c', config_file],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=open(xray_log, 'a')
         )
-        _xray_procs[config_hash] = (proc, socks_port)
-        logger.info(f"Xray 已启动 (PID {proc.pid}, 端口 {socks_port})")
-        return f"socks5://127.0.0.1:{socks_port}"
+        time.sleep(2)
+        if proc.poll() is not None:
+            with open(xray_log, 'r') as f:
+                stderr = f.read()[:500]
+            logger.error(f"Xray 启动失败: {stderr}")
+            return None
+        _xray_procs[config_hash] = (proc, http_port)
+        logger.info(f"Xray 已启动 (PID {proc.pid}, HTTP 端口 {http_port})")
+        return f"http://127.0.0.1:{http_port}"
     except Exception as e:
         logger.error(f"启动 Xray 失败: {e}")
         return None
