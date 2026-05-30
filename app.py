@@ -337,12 +337,20 @@ def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int
         content = content.rsplit('#', 1)[0]
 
     config = {
-        "log": {"loglevel": "warning"},
+        "log": {"loglevel": "debug"},
         "inbounds": [
             {"port": http_port, "listen": "127.0.0.1", "protocol": "http"}
         ],
-        "outbounds": []
+        "outbounds": [],
+        "routing": {
+            "domainStrategy": "AsIs",
+            "rules": [
+                {"type": "field", "network": "tcp,udp", "outboundTag": "proxy"}
+            ]
+        }
     }
+
+    outbound_tag = "proxy"
 
     if protocol == 'vless':
         uuid, rest = content.split('@', 1)
@@ -410,6 +418,7 @@ def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int
             svc = params.get('serviceName', [''])[0]
             outbound['streamSettings']['grpcSettings'] = {"serviceName": svc}
 
+        outbound['tag'] = 'proxy'
         config['outbounds'].append(outbound)
 
     elif protocol == 'vmess':
@@ -462,6 +471,7 @@ def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int
                 "headers": {"Host": host}
             }
 
+        outbound['tag'] = 'proxy'
         config['outbounds'].append(outbound)
 
     elif protocol == 'trojan':
@@ -509,6 +519,7 @@ def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int
                 "headers": {"Host": host}
             }
 
+        outbound['tag'] = 'proxy'
         config['outbounds'].append(outbound)
 
     elif protocol == 'ss':
@@ -570,6 +581,7 @@ def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int
                     "allowInsecure": True
                 }
 
+        outbound['tag'] = 'proxy'
         config['outbounds'].append(outbound)
 
     else:
@@ -607,6 +619,14 @@ def _start_xray(proxy_url: str) -> Optional[str]:
     config_file = os.path.join(tempfile.gettempdir(), f"xray_{config_hash}.json")
     with open(config_file, 'w') as f:
         json.dump(config, f, indent=2)
+
+    out_proto = config['outbounds'][0]['protocol']
+    out_addr = 'unknown'
+    if 'vnext' in config['outbounds'][0].get('settings', {}):
+        out_addr = config['outbounds'][0]['settings']['vnext'][0].get('address', 'unknown')
+    elif 'servers' in config['outbounds'][0].get('settings', {}):
+        out_addr = config['outbounds'][0]['settings']['servers'][0].get('address', 'unknown')
+    logger.info(f"Xray 配置: {out_proto} -> {out_addr}, HTTP 代理端口 {http_port}")
 
     try:
         xray_log = os.path.join(tempfile.gettempdir(), f"xray_{config_hash}.log")
