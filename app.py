@@ -12,6 +12,7 @@ import time
 import logging
 import base64
 import hashlib
+import html
 from datetime import datetime
 from aiohttp import web
 import aiohttp
@@ -177,7 +178,7 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
         return {'success': False, 'error': message}
     except Exception as e:
         detail = _xray_log_tail(proxy_url)
-        message = str(e)
+        message = repr(e)
         if detail:
             message = f'{message}; Xray log: {detail}'
         return {'success': False, 'error': message}
@@ -220,7 +221,7 @@ async def send_power_action(api_url: str, api_key: str, server_id: str, action: 
                 return {'success': False, 'error': f'HTTP {resp.status_code}: {text[:200]}'}
     except Exception as e:
         detail = _xray_log_tail(proxy_url)
-        message = str(e)
+        message = repr(e)
         if detail:
             message = f'{message}; Xray log: {detail}'
         return {'success': False, 'error': message}
@@ -377,6 +378,7 @@ def _find_xray() -> Optional[str]:
 
 def _generate_xray_config(proxy_url: str, socks_port: int = 1080, http_port: int = 1081) -> dict:
     """从 vless/vmess/trojan/ss 链接生成 Xray JSON 配置"""
+    proxy_url = html.unescape(proxy_url.strip())
     protocol = proxy_url.split('://')[0]
     content = proxy_url.split('://', 1)[1] if '://' in proxy_url else ''
 
@@ -648,7 +650,7 @@ def _start_xray(proxy_url: str) -> Optional[str]:
     config_hash = hashlib.md5(proxy_url.encode()).hexdigest()[:12]
 
     if config_hash in _xray_procs:
-        proc, port = _xray_procs[config_hash]
+        proc, port = _xray_procs[config_hash][:2]
         if proc.poll() is None:
             return f"http://127.0.0.1:{port}"
         logger.info(f"Xray 进程已退出 (config: {config_hash})，重新启动")
@@ -679,18 +681,20 @@ def _start_xray(proxy_url: str) -> Optional[str]:
         xray_log = os.path.join(tempfile.gettempdir(), f"xray_{config_hash}.log")
         with open(xray_log, 'w') as f:
             f.write('')
+        log_handle = open(xray_log, 'a')
         proc = subprocess.Popen(
             [xray_path, 'run', '-c', config_file],
-            stdout=subprocess.DEVNULL,
-            stderr=open(xray_log, 'a')
+            stdout=log_handle,
+            stderr=subprocess.STDOUT
         )
         time.sleep(2)
         if proc.poll() is not None:
             with open(xray_log, 'r') as f:
                 stderr = f.read()[:500]
             logger.error(f"Xray 启动失败: {stderr}")
+            log_handle.close()
             return None
-        _xray_procs[config_hash] = (proc, http_port)
+        _xray_procs[config_hash] = (proc, http_port, log_handle)
         logger.info(f"Xray 已启动 (PID {proc.pid}, HTTP 端口 {http_port})")
         return f"http://127.0.0.1:{http_port}"
     except Exception as e:
@@ -700,7 +704,8 @@ def _start_xray(proxy_url: str) -> Optional[str]:
 
 def stop_all_xray():
     """停止所有 Xray 进程"""
-    for config_hash, (proc, port) in _xray_procs.items():
+    for config_hash, proc_info in _xray_procs.items():
+        proc = proc_info[0]
         if proc.poll() is None:
             try:
                 proc.terminate()
@@ -708,6 +713,11 @@ def stop_all_xray():
             except subprocess.TimeoutExpired:
                 proc.kill()
             logger.info(f"已停止 Xray (PID {proc.pid})")
+        if len(proc_info) > 2:
+            try:
+                proc_info[2].close()
+            except Exception:
+                pass
     _xray_procs.clear()
 
 
@@ -717,6 +727,7 @@ def resolve_proxy(proxy_url: Optional[str]) -> Optional[str]:
         return None
 
     proxy_url = proxy_url.strip()
+    proxy_url = html.unescape(proxy_url)
     protocol = proxy_url.split('://')[0] if '://' in proxy_url else ''
 
     if protocol in ('vless', 'vmess', 'trojan', 'ss'):
