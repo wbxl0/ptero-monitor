@@ -21,7 +21,7 @@ from curl_cffi.requests import AsyncSession
 import subprocess
 import shutil
 import tempfile
-from urllib.parse import parse_qs, unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 
 # 配置
 PORT = int(os.environ.get('PORT', 8000))
@@ -124,6 +124,45 @@ def parse_server_url(full_url: str) -> tuple:
             return parts[0], parts[1]
         return full_url, ''
 
+def build_api_headers(api_key: str, api_url: str) -> dict:
+    """构造翼龙 Client API 请求头。"""
+    origin = ''
+    try:
+        parsed = urlsplit(api_url)
+        if parsed.scheme and parsed.netloc:
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        pass
+
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+    }
+    if origin:
+        headers['Origin'] = origin
+        headers['Referer'] = origin + '/'
+    return headers
+
+def format_http_error(status: int, text: str, headers: dict = None) -> str:
+    """返回包含关键信息的 HTTP 错误。"""
+    extra = ''
+    if headers:
+        server = headers.get('server') or headers.get('Server')
+        cf_ray = headers.get('cf-ray') or headers.get('CF-Ray')
+        parts = []
+        if server:
+            parts.append(f'server={server}')
+        if cf_ray:
+            parts.append(f'cf-ray={cf_ray}')
+        if parts:
+            extra = ' (' + ', '.join(parts) + ')'
+    return f'HTTP {status}{extra}: {text[:500]}'
+
 async def fetch_server_status(api_url: str, api_key: str, server_id: str = None, proxy_url: str = None) -> dict:
     """获取服务器状态"""
     # 如果 server_id 为空或为 '-'，从 api_url 解析
@@ -139,11 +178,7 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
     resources_url = f"{base_url}/{server_id}/resources"
     proxy = resolve_proxy(proxy_url)
 
-    headers = {
-        'Authorization': f'Bearer {api_key}',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-    }
+    headers = build_api_headers(api_key, api_url)
 
     try:
         if proxy:
@@ -157,7 +192,7 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
                             'status': data.get('attributes', {}).get('current_state', 'unknown'),
                             'resources': data.get('attributes', {})
                         }
-                    return {'success': False, 'error': f'HTTP {resp.status}: {text[:200]}'}
+                    return {'success': False, 'error': format_http_error(resp.status, text, resp.headers)}
         else:
             async with AsyncSession(impersonate="chrome", timeout=15) as session:
                 resp = await session.get(resources_url, headers=headers)
@@ -169,7 +204,7 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
                         'resources': data.get('attributes', {})
                     }
                 text = resp.text
-                return {'success': False, 'error': f'HTTP {resp.status_code}: {text[:200]}'}
+                return {'success': False, 'error': format_http_error(resp.status_code, text, resp.headers)}
     except asyncio.TimeoutError:
         detail = _xray_log_tail(proxy_url)
         message = 'Request timeout'
@@ -198,11 +233,7 @@ async def send_power_action(api_url: str, api_key: str, server_id: str, action: 
     power_url = f"{base_url}/{server_id}/power"
     proxy = resolve_proxy(proxy_url)
 
-    headers = {
-        'Authorization': f'Bearer {api_key}',
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-    }
+    headers = build_api_headers(api_key, api_url)
 
     try:
         if proxy:
@@ -211,14 +242,14 @@ async def send_power_action(api_url: str, api_key: str, server_id: str, action: 
                     if resp.status in [200, 204]:
                         return {'success': True}
                     text = await resp.text()
-                    return {'success': False, 'error': f'HTTP {resp.status}: {text[:200]}'}
+                    return {'success': False, 'error': format_http_error(resp.status, text, resp.headers)}
         else:
             async with AsyncSession(impersonate="chrome", timeout=15) as session:
                 resp = await session.post(power_url, headers=headers, json={'signal': action})
                 if resp.status_code in [200, 204]:
                     return {'success': True}
                 text = resp.text
-                return {'success': False, 'error': f'HTTP {resp.status_code}: {text[:200]}'}
+                return {'success': False, 'error': format_http_error(resp.status_code, text, resp.headers)}
     except Exception as e:
         detail = _xray_log_tail(proxy_url)
         message = repr(e)
