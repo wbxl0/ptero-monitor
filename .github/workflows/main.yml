@@ -15,7 +15,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ vars.IMAGE_NAME || github.repository }}
 
 jobs:
   build-and-push:
@@ -27,6 +26,20 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Determine image name
+        id: img
+        run: |
+          if [ -n "${{ vars.IMAGE_NAME }}" ]; then
+            NAME="${{ vars.IMAGE_NAME }}"
+            if [[ "$NAME" != *"/"* ]]; then
+              NAME="${{ github.repository_owner }}/$NAME"
+            fi
+          else
+            NAME="${{ github.repository }}"
+          fi
+          echo "value=$NAME" >> $GITHUB_OUTPUT
+          echo "Image: ${{ env.REGISTRY }}/$NAME"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -46,7 +59,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ steps.img.outputs.value }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
