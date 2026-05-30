@@ -113,14 +113,7 @@ ss://method:password@host:port?plugin=...
 |------|--------|------|
 | `PORT` | `8000` | 监听端口 |
 | `DB_PATH` | `monitor.db` | 数据库文件路径 |
-
-## ⚙️ GitHub Actions 变量
-
-在仓库 **Settings → Secrets and variables → Actions → Variables** 中设置：
-
-| 变量 | 说明 |
-|------|------|
-| `IMAGE_NAME` | 自定义 Docker 镜像名（如 `myuser/my-monitor`），不设置则默认使用仓库名 |
+| `IMAGE_NAME` | `github.repository` | GitHub Actions 自定义 Docker 镜像名（在仓库 Variables 中设置） |
 
 ## 📁 项目结构
 
