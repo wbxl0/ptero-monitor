@@ -637,20 +637,17 @@ def stop_all_xray():
 
 
 def resolve_proxy(proxy_url: Optional[str]) -> Optional[str]:
-    """解析代理地址，返回可用的代理 URL（对 vless/vmess 等自动启动 Xray 转换）"""
+    """解析代理地址，返回可用的代理 URL（对 vless/vmess/trojan/ss 自动启动 Xray 转换）"""
     if not proxy_url or not proxy_url.strip():
         return None
 
     proxy_url = proxy_url.strip()
     protocol = proxy_url.split('://')[0] if '://' in proxy_url else ''
 
-    if protocol in ('socks5', 'socks', 'http', 'https'):
-        return proxy_url
-
     if protocol in ('vless', 'vmess', 'trojan', 'ss'):
         return _start_xray(proxy_url)
 
-    return proxy_url
+    return None
 
 
 # ============ 认证相关 ============
