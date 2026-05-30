@@ -159,9 +159,17 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
                 text = resp.text
                 return {'success': False, 'error': f'HTTP {resp.status_code}: {text[:200]}'}
     except asyncio.TimeoutError:
-        return {'success': False, 'error': 'Request timeout'}
+        detail = _xray_log_tail(proxy_url)
+        message = 'Request timeout'
+        if detail:
+            message = f'{message}; Xray log: {detail}'
+        return {'success': False, 'error': message}
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        detail = _xray_log_tail(proxy_url)
+        message = str(e)
+        if detail:
+            message = f'{message}; Xray log: {detail}'
+        return {'success': False, 'error': message}
 
 async def send_power_action(api_url: str, api_key: str, server_id: str, action: str, proxy_url: str = None) -> dict:
     """发送电源操作"""
@@ -195,7 +203,11 @@ async def send_power_action(api_url: str, api_key: str, server_id: str, action: 
                 text = resp.text
                 return {'success': False, 'error': f'HTTP {resp.status_code}: {text[:200]}'}
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        detail = _xray_log_tail(proxy_url)
+        message = str(e)
+        if detail:
+            message = f'{message}; Xray log: {detail}'
+        return {'success': False, 'error': message}
 
 def add_log(server_id: int, action: str, status: str, message: str):
     """添加日志"""
@@ -321,6 +333,21 @@ def stop_monitor(server_id: int):
 
 _xray_procs: Dict[str, tuple] = {}
 _next_xray_port = 2080
+
+def _xray_log_tail(proxy_url: Optional[str], limit: int = 800) -> str:
+    """读取当前代理节点对应的 Xray 日志尾部。"""
+    if not proxy_url:
+        return ''
+    config_hash = hashlib.md5(proxy_url.strip().encode()).hexdigest()[:12]
+    xray_log = os.path.join(tempfile.gettempdir(), f"xray_{config_hash}.log")
+    if not os.path.isfile(xray_log):
+        return ''
+    try:
+        with open(xray_log, 'r', errors='replace') as f:
+            content = f.read().strip()
+        return content[-limit:] if content else ''
+    except Exception:
+        return ''
 
 def _find_xray() -> Optional[str]:
     """查找 xray 可执行文件"""
@@ -607,7 +634,7 @@ def _start_xray(proxy_url: str) -> Optional[str]:
     if config_hash in _xray_procs:
         proc, port = _xray_procs[config_hash]
         if proc.poll() is None:
-            return f"socks5://127.0.0.1:{port}"
+            return f"http://127.0.0.1:{port}"
         logger.info(f"Xray 进程已退出 (config: {config_hash})，重新启动")
 
     socks_port = _next_xray_port
