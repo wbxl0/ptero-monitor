@@ -22,7 +22,7 @@ from curl_cffi.requests import AsyncSession
 import subprocess
 import shutil
 import tempfile
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, unquote
 
 # 配置
 PORT = int(os.environ.get('PORT', 8000))
@@ -170,27 +170,11 @@ def build_server_endpoint(api_url: str, server_id: str = None) -> tuple:
 
 def build_api_headers(api_key: str, api_url: str) -> dict:
     """构造翼龙 Client API 请求头。"""
-    origin = ''
-    try:
-        parsed = urlsplit(api_url)
-        if parsed.scheme and parsed.netloc:
-            origin = f"{parsed.scheme}://{parsed.netloc}"
-    except Exception:
-        pass
-
-    headers = {
+    return {
         'Authorization': f'Bearer {api_key}',
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
+        'Content-Type': 'application/json'
     }
-    if origin:
-        headers['Origin'] = origin
-        headers['Referer'] = origin + '/'
-    return headers
 
 def format_http_error(status: int, text: str, headers: dict = None) -> str:
     """返回包含关键信息的 HTTP 错误。"""
