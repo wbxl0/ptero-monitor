@@ -145,6 +145,29 @@ def parse_server_url(full_url: str) -> tuple:
             return parts[0], parts[1]
         return full_url, ''
 
+def build_server_endpoint(api_url: str, server_id: str = None) -> tuple:
+    """返回服务器 API 端点和 server_id，避免重复拼接 server_id。"""
+    api_url = api_url.rstrip('/')
+    if not server_id or server_id == '-':
+        base_url, parsed_server_id = parse_server_url(api_url)
+        return f"{base_url.rstrip('/')}/{parsed_server_id}", parsed_server_id
+
+    if '/api/client/servers/' in api_url:
+        base_url, parsed_server_id = parse_server_url(api_url)
+        if parsed_server_id == server_id:
+            return f"{base_url.rstrip('/')}/{server_id}", server_id
+
+    if '{SERVER_ID}' in api_url:
+        return api_url.replace('{SERVER_ID}', server_id).rstrip('/'), server_id
+
+    if api_url.endswith('/api/client/servers'):
+        return f"{api_url}/{server_id}", server_id
+
+    if api_url.endswith(f'/{server_id}'):
+        return api_url, server_id
+
+    return f"{api_url}/{server_id}", server_id
+
 def build_api_headers(api_key: str, api_url: str) -> dict:
     """构造翼龙 Client API 请求头。"""
     origin = ''
@@ -186,17 +209,8 @@ def format_http_error(status: int, text: str, headers: dict = None) -> str:
 
 async def fetch_server_status(api_url: str, api_key: str, server_id: str = None, proxy_url: str = None) -> dict:
     """获取服务器状态"""
-    # 如果 server_id 为空或为 '-'，从 api_url 解析
-    if not server_id or server_id == '-':
-        base_url, server_id = parse_server_url(api_url)
-    else:
-        base_url = api_url.rstrip('/')
-        if '{SERVER_ID}' in base_url:
-            base_url = base_url.replace('{SERVER_ID}', server_id)
-        elif not base_url.endswith(server_id):
-            base_url = f"{base_url}/{server_id}" if not base_url.endswith('/') else f"{base_url}{server_id}"
-    
-    resources_url = f"{base_url}/{server_id}/resources"
+    server_endpoint, server_id = build_server_endpoint(api_url, server_id)
+    resources_url = f"{server_endpoint}/resources"
     proxy = resolve_proxy(proxy_url)
 
     headers = build_api_headers(api_key, api_url)
@@ -241,17 +255,8 @@ async def fetch_server_status(api_url: str, api_key: str, server_id: str = None,
 
 async def send_power_action(api_url: str, api_key: str, server_id: str, action: str, proxy_url: str = None) -> dict:
     """发送电源操作"""
-    # 如果 server_id 为空或为 '-'，从 api_url 解析
-    if not server_id or server_id == '-':
-        base_url, server_id = parse_server_url(api_url)
-    else:
-        base_url = api_url.rstrip('/')
-        if '{SERVER_ID}' in base_url:
-            base_url = base_url.replace('{SERVER_ID}', server_id)
-        elif not base_url.endswith(server_id):
-            base_url = f"{base_url}/{server_id}" if not base_url.endswith('/') else f"{base_url}{server_id}"
-    
-    power_url = f"{base_url}/{server_id}/power"
+    server_endpoint, server_id = build_server_endpoint(api_url, server_id)
+    power_url = f"{server_endpoint}/power"
     proxy = resolve_proxy(proxy_url)
 
     headers = build_api_headers(api_key, api_url)
