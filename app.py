@@ -13,7 +13,8 @@ import logging
 import base64
 import hashlib
 import html
-from datetime import datetime
+import secrets
+from datetime import datetime, timezone, timedelta
 from aiohttp import web
 import aiohttp
 from typing import Dict, Optional
@@ -26,8 +27,15 @@ from urllib.parse import parse_qs, unquote, urlsplit
 # 配置
 PORT = int(os.environ.get('PORT', 8000))
 DB_PATH = os.environ.get('DB_PATH', 'monitor.db')
+BEIJING_TZ = timezone(timedelta(hours=8))
+DB_TIMEOUT = 30
+LOG_RETENTION_DAYS = 2
+
+def beijing_time_converter(timestamp):
+    return datetime.fromtimestamp(timestamp, BEIJING_TZ).timetuple()
 
 # 日志配置
+logging.Formatter.converter = beijing_time_converter
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -39,7 +47,8 @@ monitor_tasks: Dict[int, asyncio.Task] = {}
 
 def init_db():
     """初始化数据库"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT)
+    configure_db(conn)
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS servers (
@@ -73,6 +82,7 @@ def init_db():
             FOREIGN KEY (server_id) REFERENCES servers(id)
         )
     ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at)')
     c.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -101,9 +111,20 @@ def set_setting(key: str, value: str):
 
 def get_db():
     """获取数据库连接"""
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
+    configure_db(conn)
     return conn
+
+def configure_db(conn):
+    """配置 SQLite 连接，降低并发读写时锁冲突概率。"""
+    conn.execute('PRAGMA busy_timeout = 30000')
+    conn.execute('PRAGMA journal_mode = WAL')
+    conn.execute('PRAGMA foreign_keys = ON')
+
+def now_beijing() -> str:
+    """返回北京时间 ISO 字符串。"""
+    return datetime.now(BEIJING_TZ).isoformat()
 
 def parse_server_url(full_url: str) -> tuple:
     """从完整URL解析出base_url和server_id
@@ -262,11 +283,17 @@ def add_log(server_id: int, action: str, status: str, message: str):
     conn = get_db()
     c = conn.cursor()
     c.execute(
-        'INSERT INTO logs (server_id, action, status, message) VALUES (?, ?, ?, ?)',
-        (server_id, action, status, message)
+        'INSERT INTO logs (server_id, action, status, message, created_at) VALUES (?, ?, ?, ?, ?)',
+        (server_id, action, status, message, now_beijing())
     )
+    prune_old_logs(conn)
     conn.commit()
     conn.close()
+
+def prune_old_logs(conn):
+    """清理超过保留天数的日志。"""
+    cutoff = datetime.now(BEIJING_TZ) - timedelta(days=LOG_RETENTION_DAYS)
+    conn.execute('DELETE FROM logs WHERE datetime(created_at) < datetime(?)', (cutoff.isoformat(),))
 
 async def monitor_server(server_id: int):
     """监控单个服务器的任务"""
@@ -295,7 +322,7 @@ async def monitor_server(server_id: int):
                 proxy_url
             )
             
-            now = datetime.now().isoformat()
+            now = now_beijing()
             
             if result['success']:
                 status = result['status']
@@ -368,6 +395,7 @@ def start_monitor(server_id: int):
     
     task = asyncio.create_task(monitor_server(server_id))
     monitor_tasks[server_id] = task
+    task.add_done_callback(lambda t, sid=server_id: monitor_tasks.pop(sid, None) if monitor_tasks.get(sid) is t else None)
 
 def stop_monitor(server_id: int):
     """停止服务器监控"""
@@ -769,6 +797,17 @@ def resolve_proxy(proxy_url: Optional[str]) -> Optional[str]:
 
 # ============ 认证相关 ============
 
+def set_session_cookie(response, request, token: str):
+    """设置会话 Cookie，HTTPS 访问时自动启用 Secure。"""
+    response.set_cookie(
+        'session',
+        token,
+        max_age=86400*7,
+        httponly=True,
+        secure=request.secure,
+        samesite='Lax'
+    )
+
 def hash_password(password: str) -> str:
     """对密码进行哈希"""
     return hashlib.sha256(password.encode()).hexdigest()
@@ -781,7 +820,7 @@ def check_auth(username: str, password: str) -> bool:
     if not stored_user or not stored_pass:
         return True  # 未设置认证，允许访问
     
-    return username == stored_user and hash_password(password) == stored_pass
+    return secrets.compare_digest(username, stored_user) and secrets.compare_digest(hash_password(password), stored_pass)
 
 def is_auth_enabled() -> bool:
     """检查是否启用了认证"""
@@ -806,7 +845,7 @@ async def auth_middleware(request, handler):
     session_token = request.cookies.get('session')
     valid_token = get_setting('session_token')
     
-    if session_token and valid_token and session_token == valid_token:
+    if session_token and valid_token and secrets.compare_digest(session_token, valid_token):
         return await handler(request)
     
     # 检查 Basic Auth
@@ -826,6 +865,16 @@ async def auth_middleware(request, handler):
     
     # API请求返回401
     return web.json_response({'success': False, 'error': '未授权，请登录'}, status=401)
+
+@web.middleware
+async def security_headers_middleware(request, handler):
+    """添加基础安全响应头，不改变页面现有 inline script/style 行为。"""
+    response = await handler(request)
+    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    response.headers.setdefault('X-Frame-Options', 'DENY')
+    response.headers.setdefault('Referrer-Policy', 'no-referrer')
+    response.headers.setdefault('Permissions-Policy', 'geolocation=(), microphone=(), camera=()')
+    return response
 
 # ============ Web API Routes ============
 
@@ -1130,12 +1179,11 @@ async def api_login(request):
         
         if check_auth(username, password):
             # 生成 session token
-            import secrets
             token = secrets.token_hex(32)
             set_setting('session_token', token)
             
             response = web.json_response({'success': True})
-            response.set_cookie('session', token, max_age=86400*7, httponly=True)
+            set_session_cookie(response, request, token)
             return response
         else:
             return web.json_response({'success': False, 'error': '用户名或密码错误'})
@@ -1160,12 +1208,11 @@ async def api_set_auth(request):
             set_setting('auth_username', username)
             set_setting('auth_password', hash_password(password))
             # 生成新的 session token
-            import secrets
             token = secrets.token_hex(32)
             set_setting('session_token', token)
             
             response = web.json_response({'success': True, 'message': '认证已启用'})
-            response.set_cookie('session', token, max_age=86400*7, httponly=True)
+            set_session_cookie(response, request, token)
             return response
         elif not username and not password:
             # 清空认证
@@ -1195,8 +1242,12 @@ async def on_startup(app):
 
 async def on_shutdown(app):
     """关闭时停止所有监控和 Xray 代理"""
-    for task in monitor_tasks.values():
+    tasks = list(monitor_tasks.values())
+    for task in tasks:
         task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    monitor_tasks.clear()
     stop_all_xray()
     logger.info("All monitors and proxies stopped")
 
@@ -1213,7 +1264,7 @@ async def api_export_backup(request):
         
         backup_data = {
             'version': '1.0',
-            'exported_at': datetime.now().isoformat(),
+            'exported_at': now_beijing(),
             'servers': [
                 {
                     'name': s['name'],
@@ -1232,7 +1283,7 @@ async def api_export_backup(request):
             text=json.dumps(backup_data, indent=2, ensure_ascii=False),
             content_type='application/json',
             headers={
-                'Content-Disposition': f'attachment; filename="ptero-monitor-backup-{datetime.now().strftime("%Y%m%d-%H%M%S")}.json"'
+                'Content-Disposition': f'attachment; filename="ptero-monitor-backup-{datetime.now(BEIJING_TZ).strftime("%Y%m%d-%H%M%S")}.json"'
             }
         )
         return response
@@ -1299,7 +1350,7 @@ async def api_import_backup(request):
 
 def create_app():
     """创建应用"""
-    app = web.Application(middlewares=[auth_middleware])
+    app = web.Application(middlewares=[security_headers_middleware, auth_middleware])
     
     # 路由
     app.router.add_get('/', index)
