@@ -146,6 +146,9 @@
         }
         .toggle-switch input:checked + .toggle-slider { background-color: #7c3aed; }
         .toggle-switch input:checked + .toggle-slider:before { transform: translateX(24px); }
+        .toggle-sm { width: 36px; height: 20px; }
+        .toggle-sm .toggle-slider:before { height: 14px; width: 14px; }
+        .toggle-sm input:checked + .toggle-slider:before { transform: translateX(16px); }
         .logs-container {
             max-height: 400px;
             overflow-y: auto;
@@ -391,6 +394,7 @@
 
     <script>
         let servers = [];
+        let showApiUrl = {};
         let refreshInterval;
 
         async function fetchServers() {
@@ -439,10 +443,17 @@
                         </label>
                     </div>
                     <div class="server-info">
-                        <div style="grid-column: span 2; word-break: break-all;">🔗 ${escapeHtml(getFullUrl(s))}</div>
+                        <div style="grid-column: span 2;">
+                            <label class="toggle-switch toggle-sm" style="vertical-align:middle;">
+                                <input type="checkbox" ${showApiUrl[s.id] ? 'checked' : ''} onchange="toggleApiUrl(${s.id})">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span style="margin-left:6px;font-size:12px;color:#888;">API</span>
+                            ${showApiUrl[s.id] ? `<span style="margin-left:8px;word-break:break-all;">${escapeHtml(getFullUrl(s))}</span>` : ''}
+                        </div>
                         <div>⏱️ ${s.interval}秒</div>
                         <div>🔄 重启${s.restart_count}次</div>
-                        <div>📡 ${s.last_check ? new Date(s.last_check).toLocaleString() : '未检查'}</div>
+                        <div>📡 ${s.last_check ? formatBeijingTime(s.last_check) : '未检查'}</div>
                         ${s.proxy_url ? `<div style="grid-column: span 2;">🌐 代理: ${escapeHtml(s.proxy_url.substring(0, 50))}${s.proxy_url.length > 50 ? '...' : ''}</div>` : ''}
                     </div>
                     <div class="server-actions">
@@ -474,7 +485,7 @@
 
             container.innerHTML = logs.map(l => `
                 <div class="log-item">
-                    <span class="log-time">${new Date(l.created_at).toLocaleString()}</span>
+                    <span class="log-time">${formatBeijingTime(l.created_at)}</span>
                     <span class="log-action">[${l.server_name || 'Unknown'}]</span>
                     <span class="log-action">${l.action}</span>
                     <span class="log-${l.status}">${l.status}</span>
@@ -517,6 +528,27 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function formatBeijingTime(value) {
+            if (!value) return '';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return value;
+            return new Intl.DateTimeFormat('zh-CN', {
+                timeZone: 'Asia/Shanghai',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            }).format(date);
+        }
+
+        function toggleApiUrl(id) {
+            showApiUrl[id] = !showApiUrl[id];
+            renderServers();
         }
 
         async function toggleServer(id) {
@@ -588,7 +620,7 @@
                     } else {
                         container.innerHTML = data.logs.map(l => `
                             <div class="log-item">
-                                <span class="log-time">${new Date(l.created_at).toLocaleString()}</span>
+                                <span class="log-time">${formatBeijingTime(l.created_at)}</span>
                                 <span class="log-action">${l.action}</span>
                                 <span class="log-${l.status}">${l.status}</span>
                                 <span>${escapeHtml(l.message)}</span>
